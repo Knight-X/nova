@@ -15,6 +15,9 @@ use serde::{Deserialize, Serialize};
 use tendermint_proto::abci::Event;
 use tracing::{debug, trace};
 
+
+
+
 /// Unique identifiers for accounts.
 pub type AccountId = String;
 
@@ -58,6 +61,7 @@ impl From<Error> for ModuleError {
 pub struct Balances(HashMap<Denom, u64>);
 
 /// The bank module
+#[derive(Clone)]
 pub struct Bank<S> {
     /// Handle to store instance
     /// The module is guaranteed exclusive access to all paths in the store key-space.
@@ -150,7 +154,7 @@ impl<S: Store> Module for Bank<S> {
     }
 
     fn init(&mut self, app_state: serde_json::Value) {
-        debug!("Initializing bank module");
+        debug!("Initializing bank module {:?}", &app_state);
 
         // safety - we panic on errors to prevent chain creation with invalid genesis config
         let accounts: HashMap<AccountId, Balances> = serde_json::from_value(app_state).unwrap();

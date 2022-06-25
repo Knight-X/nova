@@ -1,0 +1,87 @@
+syntax = "proto3";
+package moduleservice;
+
+import "protobuf/gogoproto/gogo.proto";
+
+service Module{
+    rpc init (ModuleRequest) returns (ModuleReply);
+    rpc query (ModuleQuery) returns (ModuleResponseQuery);
+    rpc deliver_msg (ModuleRequest) returns (ModuleDeliverReply);
+    rpc begin_block (ModuleBeginRequest) returns (ModuleDeliverReply);
+    rpc commit (ModuleRequest) returns (ModuleReply);
+}
+
+message ModuleRequest {
+   bytes data = 1;
+}
+message ModuleBeginRequest {
+   bytes data = 1;
+}
+
+message ModuleQuery {
+  bytes data = 1;
+  string path = 2;
+  int64 height = 3;
+  bool prove = 4;
+}
+
+
+
+message Proof {
+  int64          total     = 1;
+  int64          index     = 2;
+  bytes          leaf_hash = 3;
+  repeated bytes aunts     = 4;
+}
+
+message ValueOp {
+  // Encoded in ProofOp.Key.
+  bytes key = 1;
+
+  // To encode in ProofOp.Data
+  Proof proof = 2;
+}
+
+message DominoOp {
+  string key    = 1;
+  string input  = 2;
+  string output = 3;
+}
+
+// ProofOp defines an operation used for calculating Merkle root
+// The data could be arbitrary format, providing nessecary data
+// for example neighbouring node hash
+message ProofOp {
+  string type = 1;
+  bytes  key  = 2;
+  bytes  data = 3;
+}
+
+// ProofOps is Merkle proof defined by the list of ProofOps
+message ProofOps {
+  repeated ProofOp ops = 1 [(gogoproto.nullable) = false];
+}
+message ModuleResponseQuery {
+  bytes             data = 1;
+  ProofOps                   proof_ops = 2;
+}
+
+message Event {
+  string                  type       = 1;
+  repeated EventAttribute attributes = 2 [(gogoproto.nullable) = false, (gogoproto.jsontag) = "attributes,omitempty"];
+}
+
+// EventAttribute is a single key-value pair, associated with an event.
+message EventAttribute {
+  string key   = 1;
+  string value = 2;
+  bool   index = 3;  // nondeterministic
+}
+
+message ModuleDeliverReply {
+  repeated Event events = 1;
+}
+ 
+message ModuleReply {
+    string message = 1;
+}

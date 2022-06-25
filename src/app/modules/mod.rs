@@ -1,10 +1,10 @@
-mod auth;
-mod bank;
+pub mod bank;
 mod ibc;
-mod staking;
+pub mod dnn;
 
 pub(crate) use self::bank::Bank;
 pub(crate) use self::ibc::Ibc;
+pub(crate) use self::dnn::DnnStorage;
 
 use crate::app::store::{self, Height, Path};
 
@@ -28,6 +28,9 @@ define_error! {
         Ibc
             [ TraceError<ibc::Error> ]
             | _ | { "IBC module error" },
+        dnn 
+            [ TraceError<dnn::Error> ]
+            | _ | { "DNN module error" },
     }
 }
 

@@ -6,13 +6,11 @@ extern crate lazy_static;
 
 mod app;
 mod prostgen;
+mod offchain;
 
 use crate::app::modules::{prefix, Ibc, Identifiable};
 use crate::app::store::{InMemoryStore, ProvableStore};
 use crate::app::BaseCoinApp;
-use crate::prostgen::cosmos::auth::v1beta1::query_server::QueryServer as AuthQueryServer;
-use crate::prostgen::cosmos::base::tendermint::v1beta1::service_server::ServiceServer as HealthServer;
-use crate::prostgen::cosmos::staking::v1beta1::query_server::QueryServer as StakingQueryServer;
 use crate::prostgen::cosmos::tx::v1beta1::service_server::ServiceServer as TxServer;
 use crate::prostgen::ibc::core::client::v1::query_server::QueryServer as ClientQueryServer;
 use crate::prostgen::ibc::core::connection::v1::query_server::QueryServer as ConnectionQueryServer;
@@ -23,6 +21,8 @@ use tendermint_abci::ServerBuilder;
 use tonic::transport::Server;
 use tracing_subscriber::filter::LevelFilter;
 
+
+
 #[derive(Debug, StructOpt)]
 struct Opt {
     /// Bind the TCP server to this host.
@@ -30,7 +30,7 @@ struct Opt {
     host: String,
 
     /// Bind the TCP server to this port.
-    #[structopt(short, long, default_value = "26658")]
+    #[structopt(short, long, default_value = "26358")]
     port: u16,
 
     /// Bind the gRPC server to this port.
@@ -51,6 +51,7 @@ struct Opt {
     quiet: bool,
 }
 
+
 #[tokio::main]
 async fn grpc_serve<S: Default + ProvableStore + 'static>(
     app: BaseCoinApp<S>,
@@ -63,9 +64,6 @@ async fn grpc_serve<S: Default + ProvableStore + 'static>(
 
     // TODO(hu55a1n1): implement these services for `auth` and `staking` modules
     Server::builder()
-        .add_service(HealthServer::new(app.clone()))
-        .add_service(AuthQueryServer::new(app.clone()))
-        .add_service(StakingQueryServer::new(app.clone()))
         .add_service(TxServer::new(app.clone()))
         .add_service(ClientQueryServer::new(ibc.clone()))
         .add_service(ConnectionQueryServer::new(ibc.clone()))
@@ -74,6 +72,7 @@ async fn grpc_serve<S: Default + ProvableStore + 'static>(
         .await
         .unwrap()
 }
+
 
 fn main() {
     let opt: Opt = Opt::from_args();
