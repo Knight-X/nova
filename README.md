@@ -1,14 +1,48 @@
-# basecoin-rs
-A rudimentary Tendermint ABCI application that implements the following functionality in the form of modules - 
+# Nova
+A rust-version cosmos-sdk fork from basecoin-rs 
 * `bank` - keeps track of different accounts' balances and facilitates transactions between those accounts.
 * `ibc` - enables support for IBC (clients, connections & channels)
+* `dnn` - deep neural network module for training 
 
 ## Requirements
 So far this app has been tested with:
 * Rust >v1.52.1
 * Tendermint v0.34.10
 
-## Usage
+## Sepeficiation
+  1. rust version cosmos-sdk for rusters
+  2. offchain module for heavy computation  ex. dnn
+  3. try to build golang compatible module from rust
+  
+## Reference for main.rs
+ ```shell
+ fn main() {
+    let opt: Opt = Opt::from_args();
+    let log_level = if opt.quiet {
+        LevelFilter::OFF
+    } else if opt.verbose {
+        LevelFilter::TRACE
+    } else {
+        LevelFilter::INFO
+    };
+    tracing_subscriber::fmt().with_max_level(log_level).init();
+
+    tracing::info!("Starting app and waiting for Tendermint to connect...");
+
+    let app = BaseCoinApp::new(InMemoryStore::default()).expect("Failed to init app");
+    let app_copy = app.clone();
+    let grpc_port = opt.grpc_port;
+    let grpc_host = opt.host.clone();
+    std::thread::spawn(move || grpc_serve(app_copy, grpc_host, grpc_port));
+
+    let server = ServerBuilder::new(opt.read_buf_size)
+        .bind(format!("{}:{}", opt.host, opt.port), app)
+        .unwrap();
+    server.listen().unwrap();
+}
+```
+
+## Run your Node
 ### Step 1: Reset your local Tendermint node
 ```shell
 $ tendermint init
