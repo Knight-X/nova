@@ -62,21 +62,9 @@ pub(crate) struct ModuleServices<S> {
 
 impl<S: Default + ProvableStore + 'static> ModuleServices<S> {
     /// Constructor.
-    pub(crate) fn new(store: S) -> Result<Self, S::Error> {
-        let store = SharedStore::new(RevertibleStore::new(store));
-        // `SubStore` guarantees modules exclusive access to all paths in the store key-space.
-        let modules: Vec<Box<dyn Module<Store = ModuleStore<S>> + Send + Sync>> = vec![
-            Box::new(Bank::new(SubStore::new(
-                store.clone(),
-                prefix::Bank {}.identifier(),
-            )?)),
-            Box::new(Ibc::new(SubStore::new(
-                store.clone(),
-                prefix::Ibc {}.identifier(),
-            )?)),
-        ];
+    pub(crate) fn new(_modules: Shared<Vec<Box<dyn Module<Store = ModuleStore<S>> + Send + Sync>>>) -> Result<Self, S::Error> {
         Ok(Self {
-            modules: Arc::new(RwLock::new(modules)),
+            modules: _modules,/*Arc::new(RwLock::new(modules)),*/
         })
     }
 }
@@ -221,7 +209,7 @@ impl<S: Default + ProvableStore + 'static> ModuleService for ModuleServices<S> {
 }
 
 #[tokio::main]
-async fn serve<S: Default + ProvableStore + 'static>(store: MainStore<S>) {
+async fn serve<S: Default + ProvableStore + 'static>(store: Shared<Vec<Box<dyn Module<Store = ModuleStore<S>> + Send + Sync>>>) {
     let addr = "127.0.0.1:3000".parse().unwrap();
 
     let _module_services = ModuleServices::new(store).unwrap();
@@ -233,7 +221,7 @@ async fn serve<S: Default + ProvableStore + 'static>(store: MainStore<S>) {
 }
 
 #[tokio::main]
-async fn init_bank(_data: Vec<u8>) {
+async fn init_chain(_data: Vec<u8>) {
     let mut client = ModuleClient::connect("http://127.0.0.1:3000").await.unwrap();
     let request = tonic::Request::new(ModuleRequest {
         data: _data,
@@ -325,11 +313,12 @@ impl<S: Default + ProvableStore + 'static> BaseCoinApp<S> {
                 prefix::Ibc {}.identifier(),
             )?)),
         ];
-        let _store = store.clone();
-        std::thread::spawn(move || serve(_store));
+        let _modules = Arc::new(RwLock::new(modules));
+        let __modules = _modules.clone();
+        std::thread::spawn(move || serve(__modules));
         Ok(Self {
             store,
-            modules: Arc::new(RwLock::new(modules)),
+            modules: _modules,
             account: Default::default(),
             remote_module: true,
         })
@@ -347,35 +336,6 @@ impl<S: Default + ProvableStore> BaseCoinApp<S> {
         None
     }
 
-    // try to deliver the message to all registered modules
-    // if `module.deliver()` returns `Error::not_handled()`, try next module
-    // Return:
-    // * other errors immediately OR
-    // * `Error::not_handled()` if all modules return `Error::not_handled()`
-    // * events from first successful deliver call OR
-    fn deliver_msg(&self, message: Any) -> Result<Vec<Event>, Error> {
-        let mut modules = self.modules.write().unwrap();
-        let mut handled = false;
-        let mut events = vec![];
-
-        for m in modules.iter_mut() {
-            match m.deliver(message.clone()) {
-                Ok(mut msg_events) => {
-                    events.append(&mut msg_events);
-                    handled = true;
-                    break;
-                }
-                Err(Error(ErrorDetail::NotHandled(_), _)) => continue,
-                Err(e) => return Err(e),
-            };
-        }
-
-        if handled {
-            Ok(events)
-        } else {
-            Err(Error::not_handled())
-        }
-    }
 }
 
 impl<S: Default + ProvableStore + 'static> Application for BaseCoinApp<S> {
@@ -405,15 +365,8 @@ impl<S: Default + ProvableStore + 'static> Application for BaseCoinApp<S> {
             &String::from_utf8(request.app_state_bytes.clone()).expect("invalid genesis state"),
         )
         .expect("genesis state isn't valid JSON");
-        if self.remote_module == true {
-          let data = request.app_state_bytes.clone();
-          std::thread::spawn(move || init_bank(data));
-        } else {
-          let mut modules = self.modules.write().unwrap();
-          for m in modules.iter_mut() {
-            m.init(app_state.clone());
-          }
-        }
+        let data = request.app_state_bytes.clone();
+        std::thread::spawn(move || init_chain(data));
 
         info!("App initialized");
 
@@ -543,7 +496,6 @@ impl<S: Default + ProvableStore + 'static> Application for BaseCoinApp<S> {
         debug!("Got deliverTx request: {:?}", request);
         let mut events = vec![];
 
-        if self.remote_module == true {
           let _tx = request.tx.clone();
           let result = std::thread::spawn(move || deliver_tx(_tx)).join();
 
@@ -558,48 +510,6 @@ impl<S: Default + ProvableStore + 'static> Application for BaseCoinApp<S> {
             }
           };
           events.extend(result_data.get_ref().events.clone());
-        } else {
-
-          let tx: Tx = match request.tx.as_slice().try_into() {
-            Ok(tx) => tx,
-            Err(err) => {
-                return ResponseDeliverTx::from_error(
-                    1,
-                    format!("failed to decode incoming tx bytes: {}", err),
-                );
-            }
-          };
-
-          if tx.body.messages.is_empty() {
-            return ResponseDeliverTx::from_error(2, "Empty Tx");
-          }
-          for message in tx.body.messages {
-            // try to deliver message to every module
-            let _message = message.clone();
-            match self.deliver_msg(message.clone()) {
-                // success - append events and continue with next message
-                Ok(mut msg_events) => {
-                    events.append(&mut msg_events);
-                }
-                // return on first error -
-                // either an error that occurred during execution of this message OR no module
-                // could handle this message
-                Err(e) => {
-                    // reset changes from other messages in this tx
-                    let mut modules = self.modules.write().unwrap();
-                      for m in modules.iter_mut() {
-                        m.store().reset();
-                     }
-                    
-                    self.store.write().unwrap().reset();
-                    return ResponseDeliverTx::from_error(
-                        2,
-                        format!("deliver failed with error: {}", e),
-                    );
-                }
-            }
-          }
-        }
         
 
         ResponseDeliverTx {
