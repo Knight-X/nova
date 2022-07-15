@@ -273,10 +273,12 @@ async fn begin_block(_header: ProtoHeader) -> Result<Response<ModuleDeliverReply
 }
 
 #[tokio::main]
-async fn commit(_data: Vec<u8>) -> Result<Response<ModuleReply>, Status> {
+async fn commit() -> Result<Response<ModuleReply>, Status> {
     let mut client = ModuleClient::connect("http://127.0.0.1:3000").await.unwrap();
+
+    let _tx = vec![];
     let request = tonic::Request::new(ModuleRequest {
-        data: _data
+        data: _tx 
     });
 
     let response = client.commit(request).await;
@@ -382,12 +384,11 @@ impl<S: Default + ProvableStore + 'static> Application for BaseCoinApp<S> {
 
         let path: Option<Path> = request.path.try_into().ok();
         let modules = self.modules.read().unwrap();
-        if self.remote_module == true {
-          let _data = request.data.clone();
-          let _path = path.clone().unwrap().to_string();
-          let _height = request.height;
-          let _prove = request.prove;
-          let result_data = std::thread::spawn(move || query(_data, 
+        let _data = request.data.clone();
+        let _path = path.clone().unwrap().to_string();
+        let _height = request.height;
+        let _prove = request.prove;
+        let result_data = std::thread::spawn(move || query(_data, 
                                          _path, 
                                         _height,
                                         _prove)).join();
@@ -435,60 +436,6 @@ impl<S: Default + ProvableStore + 'static> Application for BaseCoinApp<S> {
             },
             Err(e) => return ResponseQuery::from_error(1, format!("query error: {:?}", e)),
           }
-        } else {
-          for m in modules.iter() {
-            match m.query(
-                &request.data,
-                path.as_ref(),
-                Height::from(request.height as u64),
-                request.prove,
-            ) {
-                // success - implies query was handled by this module, so return response
-                Ok(result) => {
-                    let store = self.store.read().unwrap();
-                    let proof_ops = if request.prove {
-                        let proof = store
-                            .get_proof(
-                                Height::from(request.height as u64),
-                                &"ibc".to_owned().try_into().unwrap(),
-                            )
-                            .unwrap();
-                        let mut buffer = Vec::new();
-                        proof.encode(&mut buffer).unwrap(); // safety - cannot fail since buf is a vector
-
-                        let mut ops = vec![];
-                        if let Some(mut proofs) = result.proof {
-                            ops.append(&mut proofs);
-                        }
-                        ops.push(ProofOp {
-                            r#type: "".to_string(),
-                            // FIXME(hu55a1n1)
-                            key: "ibc".to_string().into_bytes(),
-                            data: buffer,
-                        });
-                        Some(ProofOps { ops })
-                    } else {
-                        None
-                    };
-
-                    return ResponseQuery {
-                        code: 0,
-                        log: "exists".to_string(),
-                        key: request.data,
-                        value: result.data,
-                        proof_ops,
-                        height: store.current_height() as i64,
-                        ..Default::default()
-                    };
-                }
-                // `Error::not_handled()` - implies query isn't known or was intercepted but not
-                // responded to by this module, so try with next module
-                Err(Error(ErrorDetail::NotHandled(_), _)) => continue,
-                // Other error - return immediately
-                Err(e) => return ResponseQuery::from_error(1, format!("query error: {:?}", e)),
-            }
-          }
-        }
         ResponseQuery::from_error(1, "query msg not handled")
     }
 
@@ -521,14 +468,7 @@ impl<S: Default + ProvableStore + 'static> Application for BaseCoinApp<S> {
 
     fn commit(&self) -> ResponseCommit {
         let mut modules = self.modules.write().unwrap();
-        if self.remote_module == true {
-          let _tx = vec![];
-          std::thread::spawn(move || commit(_tx));
-        } else {
-          for m in modules.iter_mut() {
-            m.store().commit().expect("failed to commit to state");
-          }
-        }
+        std::thread::spawn(move || commit());
 
         let mut state = self.store.write().unwrap();
         let data = state.commit().expect("failed to commit to state");
