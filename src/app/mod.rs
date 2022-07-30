@@ -4,19 +4,12 @@ pub(crate) mod modules;
 mod response;
 pub(crate) mod store;
 
-use crate::app::modules::{prefix, Bank, Error, ErrorDetail, Ibc, Identifiable, Module};
+use crate::app::modules::{prefix, Bank, Ibc, Identifiable, Module};
 use crate::app::response::ResponseFromErrorExt;
-use crate::app::store::{ InMemoryStore,
-    Height, Identifier, Path, ProvableStore, RevertibleStore, SharedStore, Store, SubStore,
+use crate::app::store::{ 
+    Height, Identifier, Path, ProvableStore, RevertibleStore,  SharedStore, Store, SubStore,
 };
 use crate::prostgen::cosmos::auth::v1beta1::BaseAccount;
-use crate::prostgen::cosmos::base::tendermint::v1beta1::{
-    service_server::Service as HealthService, GetBlockByHeightRequest, GetBlockByHeightResponse,
-    GetLatestBlockRequest, GetLatestBlockResponse, GetLatestValidatorSetRequest,
-    GetLatestValidatorSetResponse, GetNodeInfoRequest, GetNodeInfoResponse, GetSyncingRequest,
-    GetSyncingResponse, GetValidatorSetByHeightRequest, GetValidatorSetByHeightResponse,
-    Module as VersionInfoModule, VersionInfo,
-};
 use crate::prostgen::cosmos::tx::v1beta1::service_server::Service as TxService;
 use crate::prostgen::cosmos::tx::v1beta1::{
     BroadcastTxRequest, BroadcastTxResponse, GetTxRequest, GetTxResponse, GetTxsEventRequest,
@@ -28,263 +21,29 @@ use std::sync::{Arc, RwLock};
 
 use cosmrs::Tx;
 use prost::Message;
-use prost_types::Any;
 use serde_json::Value;
 use tendermint_abci::Application;
 use tendermint_proto::abci::{
-    Event, RequestBeginBlock, RequestDeliverTx, RequestInfo, RequestInitChain, RequestQuery,
+    RequestBeginBlock, RequestDeliverTx, RequestInfo, RequestInitChain, RequestQuery,
     ResponseBeginBlock, ResponseCommit, ResponseDeliverTx, ResponseInfo, ResponseInitChain,
     ResponseQuery,
 };
 use tendermint_proto::types::Header as ProtoHeader;
 use tendermint_proto::crypto::ProofOp;
 use tendermint_proto::crypto::ProofOps;
-use tendermint_proto::p2p::DefaultNodeInfo;
 use tracing::{debug, info};
-use module_service::module_service::module_server::{Module as ModuleService, ModuleServer};
-use tonic::transport::Server;
-use module_service::module_service::module_client::ModuleClient;
-use tonic::{Request, Response, Status, Code};
+use tonic::{Request, Response, Status};
 
-use crate::app::module_service::module_service::{ModuleDeliverReply, ModuleRequest, ModuleReply, ModuleQuery, ModuleResponseQuery, ModuleBeginRequest};
 use tendermint::block::Header;
 
 pub mod module_service;
+pub mod module_interface;
+
 type MainStore<S> = SharedStore<RevertibleStore<S>>;
 type ModuleStore<S> = SubStore<MainStore<S>>;
 type Shared<T> = Arc<RwLock<T>>;
 
 
-#[derive(Clone)]
-pub(crate) struct ModuleServices<S> {
-    pub modules: Shared<Vec<Box<dyn Module<Store = ModuleStore<S>> + Send + Sync>>>,
-}
-
-impl<S: Default + ProvableStore + 'static> ModuleServices<S> {
-    /// Constructor.
-    pub(crate) fn new(_modules: Shared<Vec<Box<dyn Module<Store = ModuleStore<S>> + Send + Sync>>>) -> Result<Self, S::Error> {
-        Ok(Self {
-            modules: _modules,/*Arc::new(RwLock::new(modules)),*/
-        })
-    }
-}
-#[tonic::async_trait]
-impl<S: Default + ProvableStore + 'static> ModuleService for ModuleServices<S> {
-        async fn init(
-                    &self,
-                    request: Request<ModuleRequest>,
-        ) -> Result<Response<ModuleReply>, Status> {
-          println!("Got a request: {:?}", request);
-          let mut modules = self.modules.write().unwrap();
-          let app_state: Value = serde_json::from_str(
-            &String::from_utf8(request.get_ref().data.clone()).expect("invalid genesis state"),
-          )
-          .expect("genesis state isn't valid JSON");
-          for m in modules.iter_mut() {
-             m.init(app_state.clone());
-          }
-
-
-          let reply = crate::app::module_service::module_service::ModuleReply {
-                   message: format!("Hello blockchain {:?}!", request.get_ref().data).into(),
-                   };
-
-        Ok(Response::new(reply))
-     }
-
-     async fn query(
-                    &self,
-                    request: Request<ModuleQuery>,
-        ) -> Result<Response<ModuleResponseQuery>, Status> {
-        println!("Got a request: {:?}", request);
-
-        let path: Option<Path> = request.get_ref().path.clone().try_into().ok();
-        let modules = self.modules.read().unwrap();
-        for m in modules.iter() {
-            match m.query(
-                &request.get_ref().data,
-                path.as_ref(),
-                Height::from(request.get_ref().height as u64),
-                request.get_ref().prove,
-            ) {
-                // success - implies query was handled by this module, so return response
-                Ok(result) => {
-                  let mut ops = vec![];
-                  if let Some(mut proofs) = result.proof {
-                    ops.append(&mut proofs);
-                  };
-                  let proofops = ProofOps {
-                    ops
-                  };
-                  let reply = crate::app::module_service::module_service::ModuleResponseQuery {
-                    data: result.data, 
-                    proof_ops: Some(proofops)
-
-                  };
-                  return Ok(Response::new(reply));
-
-                },
-                Err(Error(ErrorDetail::NotHandled(_), _)) => continue,
-                Err(e) => return Err(Status::new(Code::InvalidArgument, format!("query error: {:?}", e))),
-            }
-        }
-
-
-            Err(Status::new(Code::InvalidArgument, "name is invalid"))
-     }
-
-    async fn deliver_msg(&self, message: Request<ModuleRequest>
-        ) -> Result<Response<ModuleDeliverReply>, Status> {
-        let mut modules = self.modules.write().unwrap();
-        let mut handled = false;
-        let mut events = vec![];
-
-        let tx: Tx = match message.get_ref().data.as_slice().try_into() {
-          Ok(tx) => tx,
-          Err(err) => {
-              return Err(Status::new(Code::InvalidArgument, "name is invalid"));
-          },
-        };
-
-        if tx.body.messages.is_empty() {
-            return Err(Status::new(Code::InvalidArgument,  "Empty Tx"));
-        }
-        for message in tx.body.messages {
-            // try to deliver message to every module
-            let _message = message.clone();
-            for m in modules.iter_mut() {
-              match m.deliver(message.clone()) {
-                // success - append events and continue with next message
-                Ok(mut msg_events) => {
-                    events.append(&mut msg_events);
-                    handled = true;
-                    break;
-                }
-                Err(Error(ErrorDetail::NotHandled(_), _)) => continue,
-                Err(e) => {
-                    return Err(Status::new(Code::InvalidArgument, "name is invalid"));
-                }
-              }
-            }
-        }
-
-        let reply = crate::app::module_service::module_service::ModuleDeliverReply {
-                   events: events
-
-                   };
-
-        Ok(Response::new(reply))
-    }
-    async  fn begin_block(&self, message: Request<ModuleBeginRequest>)
-        -> Result<Response<ModuleDeliverReply>, Status> {
-        debug!("Got begin block request.");
-
-        let mut modules = self.modules.write().unwrap();
-        let mut events = vec![];
-        let header = message.get_ref().header.as_ref().unwrap().clone().try_into().unwrap();
-        for m in modules.iter_mut() {
-            events.extend(m.begin_block(&header));
-        }
-
-        let reply = crate::app::module_service::module_service::ModuleDeliverReply {
-                   events: events
-
-        };
-
-        Ok(Response::new(reply))
-    }
-    async fn commit(&self, message: Request<ModuleRequest>) 
-        -> Result<Response<ModuleReply>, Status> {
-        let mut modules = self.modules.write().unwrap();
-        for m in modules.iter_mut() {
-            m.store().commit().expect("failed to commit to state");
-        }
-        let reply = crate::app::module_service::module_service::ModuleReply {
-           message: format!("Hello blockchain {:?}!", "3"),
-        };
-
-        Ok(Response::new(reply))
-
-    }
-}
-
-#[tokio::main]
-async fn serve<S: Default + ProvableStore + 'static>(store: Shared<Vec<Box<dyn Module<Store = ModuleStore<S>> + Send + Sync>>>) {
-    let addr = "127.0.0.1:3000".parse().unwrap();
-
-    let _module_services = ModuleServices::new(store).unwrap();
-    Server::builder()
-      .add_service(ModuleServer::new(_module_services))
-      .serve(addr)
-      .await.unwrap();
-
-}
-
-#[tokio::main]
-async fn init_chain(_data: Vec<u8>) {
-    let mut client = ModuleClient::connect("http://127.0.0.1:3000").await.unwrap();
-    let request = tonic::Request::new(ModuleRequest {
-        data: _data,
-    });
-
-    let response = client.init(request).await.unwrap();
-
-    info!("Bank initialized {:?}", response);
-
-}
-#[tokio::main]
-async fn query(_data: Vec<u8>, _path: String, _height: i64, _prove: bool) -> Result<Response<ModuleResponseQuery>, Status> {
-    let mut client = ModuleClient::connect("http://127.0.0.1:3000").await.unwrap();
-    let request = tonic::Request::new(ModuleQuery {
-        data: _data,
-        path: _path,
-        height: _height,
-        prove: _prove
-    });
-
-    let response = client.query(request).await;
-    response
-
-
-}
-
-#[tokio::main]
-async fn deliver_tx(_data: Vec<u8>) -> Result<Response<ModuleDeliverReply>, Status>{
-    let mut client = ModuleClient::connect("http://127.0.0.1:3000").await.unwrap();
-    let request = tonic::Request::new(ModuleRequest {
-        data: _data,
-    });
-
-    let response = client.deliver_msg(request).await;
-    response
-
-}
-
-#[tokio::main]
-async fn begin_block(_header: ProtoHeader) -> Result<Response<ModuleDeliverReply>, Status>{
-    let mut client = ModuleClient::connect("http://127.0.0.1:3000").await.unwrap();
-    let request = tonic::Request::new(ModuleBeginRequest {
-        header: Some(_header),
-    });
-
-    let response = client.begin_block(request).await;
-
-    response
-}
-
-#[tokio::main]
-async fn commit() -> Result<Response<ModuleReply>, Status> {
-    let mut client = ModuleClient::connect("http://127.0.0.1:3000").await.unwrap();
-
-    let _tx = vec![];
-    let request = tonic::Request::new(ModuleRequest {
-        data: _tx 
-    });
-
-    let response = client.commit(request).await;
-    response
-
-}
 
 /// Unique identifiers for accounts.
 pub type AccountId = String;
@@ -317,7 +76,7 @@ impl<S: Default + ProvableStore + 'static> BaseCoinApp<S> {
         ];
         let _modules = Arc::new(RwLock::new(modules));
         let __modules = _modules.clone();
-        std::thread::spawn(move || serve(__modules));
+        std::thread::spawn(move || module_interface::serve(__modules));
         Ok(Self {
             store,
             modules: _modules,
@@ -368,7 +127,7 @@ impl<S: Default + ProvableStore + 'static> Application for BaseCoinApp<S> {
         )
         .expect("genesis state isn't valid JSON");
         let data = request.app_state_bytes.clone();
-        std::thread::spawn(move || init_chain(data));
+        std::thread::spawn(move || module_interface::init_chain(data));
 
         info!("App initialized");
 
@@ -388,7 +147,7 @@ impl<S: Default + ProvableStore + 'static> Application for BaseCoinApp<S> {
         let _path = path.clone().unwrap().to_string();
         let _height = request.height;
         let _prove = request.prove;
-        let result_data = std::thread::spawn(move || query(_data, 
+        let result_data = std::thread::spawn(move || module_interface::query(_data, 
                                          _path, 
                                         _height,
                                         _prove)).join();
@@ -444,7 +203,7 @@ impl<S: Default + ProvableStore + 'static> Application for BaseCoinApp<S> {
         let mut events = vec![];
 
           let _tx = request.tx.clone();
-          let result = std::thread::spawn(move || deliver_tx(_tx)).join();
+          let result = std::thread::spawn(move || module_interface::deliver_tx(_tx)).join();
 
 
           let result_data = match result {
@@ -468,7 +227,7 @@ impl<S: Default + ProvableStore + 'static> Application for BaseCoinApp<S> {
 
     fn commit(&self) -> ResponseCommit {
         let mut modules = self.modules.write().unwrap();
-        std::thread::spawn(move || commit());
+        std::thread::spawn(move || module_interface::commit());
 
         let mut state = self.store.write().unwrap();
         let data = state.commit().expect("failed to commit to state");
@@ -491,7 +250,7 @@ impl<S: Default + ProvableStore + 'static> Application for BaseCoinApp<S> {
         let mut modules = self.modules.write().unwrap();
         let mut events = vec![];
         let _header: ProtoHeader = request.header.clone().unwrap().try_into().unwrap();
-        std::thread::spawn(move || begin_block(_header));
+        std::thread::spawn(move || module_interface::begin_block(_header));
         let header: Header = request.header.unwrap().try_into().unwrap();
         for m in modules.iter_mut() {
             events.extend(m.begin_block(&header));

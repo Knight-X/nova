@@ -1,7 +1,5 @@
-use tendermint_proto::crypto::ProofOp;
 use tendermint_proto::crypto::ProofOps;
 use tendermint_proto::abci::{Event};
-use tendermint_proto::types::Header;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ModuleRequest {

@@ -1,10 +1,7 @@
 
 use serde_json::Value;
-use std::convert::TryInto;
 use std::num::ParseIntError;
-use std::str::FromStr;
 use flex_error::{define_error, TraceError};
-use std::collections::HashMap;
 use tendermint_proto::abci::Event;
 use prost_types::Any;
 use crate::app::store::{Height, Path, Store};
@@ -13,6 +10,7 @@ use prost::{DecodeError, Message};
 use serde::{Deserialize, Serialize};
 use crate::offchain::nn::run_dl;
 pub type AccountId = String;
+
 define_error! {
     #[derive(Eq, PartialEq)]
     Error {
@@ -60,7 +58,7 @@ impl<S: Store> DnnStorage<S> {
     }
 
     fn decode<T: Message + Default>(message: Any) -> Result<T, ModuleError> {
-        if message.type_url != "/cosmos.bank.v1beta1.MsgSend" {
+        if message.type_url != "/dnn.v1beta1.MsgSend" {
             return Err(ModuleError::not_handled());
         }
         Message::decode(message.value.as_ref()).map_err(|e| Error::msg_decode_failure(e).into())
